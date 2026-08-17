@@ -28,9 +28,14 @@ If an adapter exists for the provider, use it. It fixes the key, label, and a re
 
 ```bash
 hermes-secret-drop create --adapter openrouter-hermes
+hermes-secret-drop create --adapter cloudflare-r2-hermes
 ```
 
-Available adapters: `openrouter-hermes` (binds `OPENROUTER_API_KEY` and verifies the key with OpenRouter). Do not invent adapter names.
+Available adapters:
+- `openrouter-hermes` binds `OPENROUTER_API_KEY` and verifies the key with OpenRouter.
+- `cloudflare-r2-hermes` renders separate **Access Key ID** and **Secret Access Key** fields, then assembles `CLOUDFLARE_R2_CREDENTIAL` JSON server-side. It performs syntax validation only; verify the credential against the configured R2 bucket before enabling recurring work.
+
+Do not invent adapter names.
 
 Otherwise create a generic request. The key must be an uppercase environment variable that clearly ends in `_API_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`, `_PASS`, `_URL`, `_URI`, or `_CREDENTIAL`.
 
@@ -63,8 +68,8 @@ The demo accepts only a fake value. It discards the submitted value instead of w
 ## Security contract
 
 - Tailscale is a prerequisite. The web service is never exposed with Tailscale Funnel.
-- The browser can submit one value but cannot list, retrieve, export, prefill, or reveal stored values.
-- The eye icon shows only the value currently typed in that browser.
+- The browser can submit the fixed labeled value set for a request but cannot list, retrieve, export, or prefill stored values.
+- Each field's Show button reveals only the value currently typed in that browser.
 - A link is single-use. Deployments default to a two-hour lifetime and may explicitly configure a cap up to the hard maximum of five hours.
 - The link's capability sits only in the URL fragment, so it never reaches the server in a request line or a log. The service stores only its SHA-256 digest.
 - Active request metadata never stores the submitted secret or the capability. Used, expired, and superseded request files are retired automatically; short-lived tombstones preserve sanitized status only.

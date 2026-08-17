@@ -147,6 +147,15 @@ class SecretDropTestCase(unittest.TestCase):
             headers["Origin"] = origin
         return self.http("POST", "/api/secret", body, headers)
 
+    def post_secrets(self, capability: str | None, values: dict[str, str], origin: str | None = ORIGIN):
+        body = json.dumps({"secrets": values})
+        headers = {"Content-Type": "application/json", "Content-Length": str(len(body))}
+        if capability is not None:
+            headers[secret_drop.TOKEN_HEADER] = capability
+        if origin is not None:
+            headers["Origin"] = origin
+        return self.http("POST", "/api/secret", body, headers)
+
     def state_files_contain(self, needle: str) -> bool:
         for path in self.state.rglob("*"):
             if not path.is_file():
@@ -222,7 +231,7 @@ class AppShellTests(SecretDropTestCase):
         self.assertIn("history.replaceState", text)
         self.assertIn(secret_drop.TOKEN_HEADER, text)
         self.assertIn('id="secret-form"', text)
-        self.assertIn('id="reveal-secret"', text)
+        self.assertIn('id="secret-fields"', text)
         self.assertIn('id="countdown"', text)
         self.assertNotIn("Save &amp; test", text)
         self.assertIn('type="submit">Save</button>', text)
@@ -410,6 +419,61 @@ class AdapterTests(SecretDropTestCase):
         self.assertEqual(created["env_key"], "EXAMPLE_API_KEY")
         self.assertEqual(created["validator"], "opaque")
         self.assertIsNone(created["adapter"])
+
+    def test_cloudflare_r2_adapter_collects_two_fields_and_assembles_json_server_side(self):
+        created = secret_drop.create_request(
+            self.config, None, None, None, 15, adapter="cloudflare-r2-hermes"
+        )
+        self.assertEqual(created["env_key"], "CLOUDFLARE_R2_CREDENTIAL")
+        _, state = secret_drop.load_request(self.config, created["request_id"])
+        expected_fields = [
+            {"name": "access_key_id", "label": "Access Key ID"},
+            {"name": "secret_access_key", "label": "Secret Access Key"},
+        ]
+        self.assertEqual(state["fields"], expected_fields)
+        self.assertEqual(state["encoding"], "cloudflare-r2-json")
+
+        capability = self.capability(created)
+        self.start_server()
+        status, body = self.get_metadata(capability)
+        self.assertEqual(status, 200)
+        metadata = json.loads(body)
+        self.assertEqual(metadata["fields"], expected_fields)
+        self.assertNotIn("env_key", metadata)
+        self.assertNotIn("encoding", metadata)
+        self.assertNotIn("adapter", metadata)
+
+        status, _, body = self.post_secrets(
+            capability,
+            {"access_key_id": "runtime-access", "secret_access_key": "runtime-secret"},
+        )
+        self.assertEqual(status, 200, body)
+        stored = self.env.read_text(encoding="utf-8").split("=", 1)[1].strip()
+        credential = json.loads(ast.literal_eval(stored))
+        self.assertEqual(
+            credential,
+            {"access_key_id": "runtime-access", "secret_access_key": "runtime-secret"},
+        )
+
+    def test_cloudflare_r2_adapter_rejects_partial_or_extra_fields_without_consuming(self):
+        created = secret_drop.create_request(
+            self.config, None, None, None, 15, adapter="cloudflare-r2-hermes"
+        )
+        capability = self.capability(created)
+        self.start_server()
+        for values in (
+            {"access_key_id": "only-one"},
+            {
+                "access_key_id": "runtime-access",
+                "secret_access_key": "runtime-secret",
+                "extra": "wrong",
+            },
+        ):
+            with self.subTest(values=values):
+                status, _, _ = self.post_secrets(capability, values)
+                self.assertEqual(status, 400)
+                status_value, _ = secret_drop.get_request_state(self.config, created["request_id"])
+                self.assertEqual(status_value, "pending")
 
     def test_provider_validators_are_reachable_only_through_an_adapter(self):
         self.assertNotIn("openrouter-api-key", secret_drop.GENERIC_VALIDATORS)

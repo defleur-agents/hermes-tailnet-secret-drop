@@ -37,7 +37,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener, urlopen
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 USER_AGENT = f"Hermes-Tailnet-Secret-Drop/{APP_VERSION}"
 DEFAULT_TTL_MINUTES = 120
 MAX_TTL_MINUTES = 120
@@ -87,12 +87,10 @@ CLIENT_SCRIPT = """(() => {
   const heading = document.getElementById('heading');
   const feedback = document.getElementById('feedback');
   const form = document.getElementById('secret-form');
-  const input = document.getElementById('secret');
-  const label = document.getElementById('secret-label');
+  const fieldsContainer = document.getElementById('secret-fields');
   const submit = document.getElementById('submit');
   const countdown = document.getElementById('countdown');
-  const reveal = document.getElementById('reveal-secret');
-  const slash = document.getElementById('eye-slash');
+  let inputs = [];
   let finished = false;
   let progressLabel = 'Saving\\u2026';
 
@@ -109,14 +107,46 @@ CLIENT_SCRIPT = """(() => {
     setFeedback(message);
   };
 
-  reveal.addEventListener('click', () => {
-    const showing = input.type === 'password';
-    input.type = showing ? 'text' : 'password';
-    reveal.setAttribute('aria-label', showing ? 'Hide value' : 'Show value');
-    reveal.setAttribute('title', showing ? 'Hide value' : 'Show value');
-    slash.hidden = !showing;
-    input.focus({preventScroll: true});
-  });
+  const clearInputs = () => inputs.forEach((input) => { input.value = ''; });
+
+  const renderFields = (specs) => {
+    fieldsContainer.replaceChildren();
+    inputs = specs.map((spec, index) => {
+      const group = document.createElement('div');
+      group.className = 'field-group';
+      const fieldLabel = document.createElement('label');
+      fieldLabel.className = 'field-label';
+      fieldLabel.htmlFor = `secret-${index}`;
+      fieldLabel.textContent = spec.label || 'Secret value';
+      const field = document.createElement('div');
+      field.className = 'field';
+      const input = document.createElement('input');
+      input.id = `secret-${index}`;
+      input.type = 'password';
+      input.required = true;
+      input.autocomplete = 'off';
+      input.autocapitalize = 'off';
+      input.spellcheck = false;
+      input.dataset.fieldName = spec.name;
+      input.setAttribute('aria-label', fieldLabel.textContent);
+      const reveal = document.createElement('button');
+      reveal.className = 'reveal';
+      reveal.type = 'button';
+      reveal.textContent = 'Show';
+      reveal.setAttribute('aria-label', `Show ${fieldLabel.textContent}`);
+      reveal.addEventListener('click', () => {
+        const showing = input.type === 'password';
+        input.type = showing ? 'text' : 'password';
+        reveal.textContent = showing ? 'Hide' : 'Show';
+        reveal.setAttribute('aria-label', `${showing ? 'Hide' : 'Show'} ${fieldLabel.textContent}`);
+        input.focus({preventScroll: true});
+      });
+      field.append(input, reveal);
+      group.append(fieldLabel, field);
+      fieldsContainer.append(group);
+      return input;
+    });
+  };
 
   const startCountdown = (seconds) => {
     const deadline = performance.now() + Math.max(0, seconds) * 1000;
@@ -127,7 +157,7 @@ CLIENT_SCRIPT = """(() => {
       const minutes = Math.floor(remaining / 60);
       countdown.textContent = `${minutes}:${String(remaining % 60).padStart(2, '0')}`;
       if (remaining <= 0) {
-        input.value = '';
+        clearInputs();
         finish('Expired', 'This Secret Drop link is no longer valid. Ask for a new one.');
         return;
       }
@@ -155,23 +185,25 @@ CLIENT_SCRIPT = """(() => {
       return;
     }
     const name = data.label || 'Secret';
+    const fieldSpecs = Array.isArray(data.fields) && data.fields.length ? data.fields : [{name: 'secret', label: name}];
     heading.textContent = name;
-    label.textContent = name;
-    input.setAttribute('aria-label', name);
+    renderFields(fieldSpecs);
     document.title = name + ' \\u00b7 Hermes Secret Drop';
     submit.textContent = data.submit_label || 'Save';
     progressLabel = data.progress_label || 'Saving\\u2026';
     form.hidden = false;
-    input.focus({preventScroll: true});
+    inputs[0].focus({preventScroll: true});
     startCountdown(Number(data.expires_in_seconds || 0));
   }).catch(() => finish('Unavailable', 'The Secret Drop service could not be reached.'));
 
   form.addEventListener('submit', (event) => {
     event.preventDefault();
     if (finished) return;
-    const value = input.value;
-    if (!value) {
-      setFeedback('Enter the value to save.');
+    const secrets = Object.fromEntries(inputs.map((input) => [input.dataset.fieldName, input.value]));
+    const empty = inputs.find((input) => !input.value);
+    if (empty) {
+      setFeedback('Complete every field.');
+      empty.focus({preventScroll: true});
       return;
     }
     submit.disabled = true;
@@ -179,22 +211,22 @@ CLIENT_SCRIPT = """(() => {
     api('/api/secret', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({secret: value})
+      body: JSON.stringify({secrets})
     }).then(({ok, data}) => {
-      input.value = '';
+      clearInputs();
       if (ok) {
         finish(data.result === 'discarded' ? 'Done' : 'Saved', data.note || '');
         return;
       }
       submit.disabled = false;
       if (data.retry) {
-        setFeedback(data.error || 'That value was not accepted. Try again.');
-        input.focus({preventScroll: true});
+        setFeedback(data.error || 'Those values were not accepted. Try again.');
+        inputs[0].focus({preventScroll: true});
         return;
       }
       finish(data.title || 'Not saved', data.error || '');
     }).catch(() => {
-      input.value = '';
+      clearInputs();
       submit.disabled = false;
       setFeedback('The value could not be sent. Try again.');
     });
@@ -520,11 +552,23 @@ PROVIDER_VALIDATORS = frozenset({"openrouter-api-key"})
 GENERIC_VALIDATORS = tuple(sorted(set(VALIDATORS) - PROVIDER_VALIDATORS))
 
 # A fixed, provider-bound intake. The operator picks the adapter; the browser never can.
-ADAPTERS: dict[str, dict[str, str]] = {
+ADAPTERS: dict[str, dict[str, Any]] = {
     "openrouter-hermes": {
         "env_key": "OPENROUTER_API_KEY",
         "label": "OpenRouter API key",
         "validator": "openrouter-api-key",
+        "encoding": "single",
+        "fields": [{"name": "secret", "label": "OpenRouter API key"}],
+    },
+    "cloudflare-r2-hermes": {
+        "env_key": "CLOUDFLARE_R2_CREDENTIAL",
+        "label": "Cloudflare R2 runtime credential",
+        "validator": "opaque",
+        "encoding": "cloudflare-r2-json",
+        "fields": [
+            {"name": "access_key_id", "label": "Access Key ID"},
+            {"name": "secret_access_key", "label": "Secret Access Key"},
+        ],
     },
 }
 
@@ -600,12 +644,13 @@ def resolve_intake(
     adapter: str | None,
     *,
     demo: bool,
-) -> tuple[str | None, str, str, str | None]:
-    """Return (env_key, label, validator, adapter) for one intake."""
+) -> tuple[str | None, str, str, str | None, list[dict[str, str]], str]:
+    """Return the fixed destination, presentation fields, validator, and assembler."""
     if demo:
         if adapter:
             raise SecretDropError("A demo request cannot use a provider adapter.")
-        return None, validate_label(label or "Example API key"), "opaque", None
+        resolved_label = validate_label(label or "Example API key")
+        return None, resolved_label, "opaque", None, [{"name": "secret", "label": resolved_label}], "single"
 
     if adapter is not None:
         spec = ADAPTERS.get(adapter)
@@ -613,7 +658,15 @@ def resolve_intake(
             raise SecretDropError("The requested adapter is not available.")
         if key is not None or label is not None or validator is not None:
             raise SecretDropError("An adapter already fixes the environment key, label, and validator.")
-        return spec["env_key"], spec["label"], spec["validator"], adapter
+        fields = [dict(field) for field in spec["fields"]]
+        return (
+            str(spec["env_key"]),
+            str(spec["label"]),
+            str(spec["validator"]),
+            adapter,
+            fields,
+            str(spec["encoding"]),
+        )
 
     if not key or not label:
         raise SecretDropError("Provide --key and --label, or use --adapter.")
@@ -622,7 +675,15 @@ def resolve_intake(
         raise SecretDropError("Provider validation is available only through --adapter.")
     if validator not in VALIDATORS:
         raise SecretDropError("The requested validator is not available.")
-    return validate_env_key(key), validate_label(label), validator, None
+    resolved_label = validate_label(label)
+    return (
+        validate_env_key(key),
+        resolved_label,
+        validator,
+        None,
+        [{"name": "secret", "label": resolved_label}],
+        "single",
+    )
 
 
 def supersede_pending_requests(config: dict[str, Any], env_key: str) -> int:
@@ -668,7 +729,9 @@ def create_request(
     demo: bool = False,
     adapter: str | None = None,
 ) -> dict[str, Any]:
-    key, label, validator, adapter = resolve_intake(key, label, validator, adapter, demo=demo)
+    key, label, validator, adapter, fields, encoding = resolve_intake(
+        key, label, validator, adapter, demo=demo
+    )
     max_ttl_minutes = configured_max_ttl_minutes(config)
     if ttl_minutes < 1 or ttl_minutes > max_ttl_minutes:
         raise SecretDropError(f"Request lifetime must be between 1 and {max_ttl_minutes} minutes.")
@@ -696,6 +759,8 @@ def create_request(
             "env_key": key,
             "adapter": adapter,
             "validator": validator,
+            "fields": fields,
+            "encoding": encoding,
             "mode": "demo" if demo else "secret",
             "status": "pending",
             "created_at": isoformat(created),
@@ -882,7 +947,45 @@ def atomic_update_env(env_path: Path, key: str, value: str, state_dir: Path) -> 
             raise
 
 
-def consume_request(config: dict[str, Any], request_id: str, submitted_value: str) -> dict[str, Any]:
+def assemble_submitted_values(request: dict[str, Any], submitted: str | dict[str, str]) -> str:
+    fields = request.get("fields")
+    if fields is None:
+        fields = [{"name": "secret", "label": request.get("label", "Secret")}]
+    if not isinstance(fields, list) or not fields:
+        raise SecretDropError("This Secret Drop request is not configured correctly.", HTTPStatus.INTERNAL_SERVER_ERROR)
+    names: list[str] = []
+    for field in fields:
+        if not isinstance(field, dict) or set(field) != {"name", "label"}:
+            raise SecretDropError("This Secret Drop request is not configured correctly.", HTTPStatus.INTERNAL_SERVER_ERROR)
+        name = field.get("name")
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]{1,63}", name):
+            raise SecretDropError("This Secret Drop request is not configured correctly.", HTTPStatus.INTERNAL_SERVER_ERROR)
+        names.append(name)
+    if len(names) != len(set(names)):
+        raise SecretDropError("This Secret Drop request is not configured correctly.", HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    if isinstance(submitted, str):
+        if names != ["secret"]:
+            raise SecretDropError("Use the Secret Drop page to submit every required value.")
+        values = {"secret": submitted}
+    elif isinstance(submitted, dict) and set(submitted) == set(names) and all(
+        isinstance(value, str) for value in submitted.values()
+    ):
+        values = submitted
+    else:
+        raise SecretDropError("Use the Secret Drop page to submit every required value.")
+    clean = {name: validate_opaque(values[name]) for name in names}
+    encoding = str(request.get("encoding", "single"))
+    if encoding == "single" and names == ["secret"]:
+        return clean["secret"]
+    if encoding == "cloudflare-r2-json" and names == ["access_key_id", "secret_access_key"]:
+        return json.dumps(clean, separators=(",", ":"), sort_keys=True)
+    raise SecretDropError("This Secret Drop request is not configured correctly.", HTTPStatus.INTERNAL_SERVER_ERROR)
+
+
+def consume_request(
+    config: dict[str, Any], request_id: str, submitted_value: str | dict[str, str]
+) -> dict[str, Any]:
     """Validate one submission, then deliver it only if the request is still current.
 
     Validation runs outside the lifecycle lock because it can reach the network.
@@ -899,13 +1002,24 @@ def consume_request(config: dict[str, Any], request_id: str, submitted_value: st
         if not validator_entry:
             raise SecretDropError("This Secret Drop request is not configured correctly.", HTTPStatus.INTERNAL_SERVER_ERROR)
         ensure_usable(config, request_id, request)
+        intake_binding = json.dumps(
+            {"fields": request.get("fields"), "encoding": request.get("encoding", "single")},
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        assembled_value = assemble_submitted_values(request, submitted_value)
 
     validator, _ = validator_entry
-    value = validator(submitted_value)
+    value = validator(assembled_value)
 
     with lifecycle_lock(state_dir):
         path, request = load_active_request(config, request_id)
-        if str(request.get("validator", "")) != validator_name:
+        observed_binding = json.dumps(
+            {"fields": request.get("fields"), "encoding": request.get("encoding", "single")},
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        if str(request.get("validator", "")) != validator_name or observed_binding != intake_binding:
             raise SecretDropError("This Secret Drop request changed while it was being verified.", HTTPStatus.CONFLICT)
         ensure_usable(config, request_id, request)
 
@@ -964,8 +1078,8 @@ main{{min-height:100svh;display:grid;place-items:center;padding:28px 20px}}
 .brand{{font-size:13px;font-weight:800;letter-spacing:-.01em}}.brand span{{color:var(--muted);font-weight:500}}
 .countdown{{position:absolute;top:0;right:0;color:var(--muted);font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}}
 h1{{margin:52px 0 24px;font-size:clamp(27px,7vw,34px);line-height:1.12;letter-spacing:-.045em;font-weight:720}}
-.field{{position:relative}}input{{width:100%;height:54px;border:1px solid var(--line);border-radius:12px;padding:0 52px 0 15px;background:#fff;color:var(--ink);font:inherit}}input:focus{{outline:2px solid #111;outline-offset:1px;border-color:#111}}input:disabled{{background:var(--soft);color:var(--muted)}}
-.reveal{{position:absolute;right:5px;top:5px;width:44px;height:44px;display:grid;place-items:center;border:0;border-radius:9px;background:transparent;color:#666;cursor:pointer}}.reveal:hover{{background:var(--soft);color:#111}}.reveal:focus-visible{{outline:2px solid #111}}.reveal svg{{width:21px;height:21px}}
+.field-group{{margin-top:14px}}.field-label{{display:block;margin:0 0 7px;font-size:14px;font-weight:650}}.field{{position:relative}}input{{width:100%;height:54px;border:1px solid var(--line);border-radius:12px;padding:0 72px 0 15px;background:#fff;color:var(--ink);font:inherit}}input:focus{{outline:2px solid #111;outline-offset:1px;border-color:#111}}input:disabled{{background:var(--soft);color:var(--muted)}}
+.reveal{{position:absolute;right:5px;top:5px;min-width:58px;height:44px;padding:0 10px;border:0;border-radius:9px;background:transparent;color:#666;font:inherit;font-size:13px;font-weight:650;cursor:pointer}}.reveal:hover{{background:var(--soft);color:#111}}.reveal:focus-visible{{outline:2px solid #111}}
 .submit{{width:100%;height:52px;margin-top:12px;border:0;border-radius:12px;background:#111;color:#fff;font:inherit;font-weight:700;cursor:pointer}}.submit:hover{{background:#2a2a2a}}.submit:focus-visible{{outline:2px solid #111;outline-offset:2px}}.submit:disabled{{background:#aaa;cursor:not-allowed}}
 .feedback{{margin:-10px 0 16px;color:var(--bad);font-size:13px;line-height:1.45}}
 .sr-only{{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}}
@@ -978,15 +1092,7 @@ h1{{margin:52px 0 24px;font-size:clamp(27px,7vw,34px);line-height:1.12;letter-sp
 <h1 id="heading">Secret Drop</h1>
 <p class="feedback" id="feedback" role="alert" hidden></p>
 <form id="secret-form" autocomplete="off" hidden>
-<label class="sr-only" id="secret-label" for="secret">Value</label>
-<div class="field">
-<input id="secret" name="secret" type="password" required autocomplete="off" autocapitalize="off" spellcheck="false">
-<button id="reveal-secret" class="reveal" type="button" aria-label="Show value" title="Show value">
-<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-<path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.7"/><path id="eye-slash" d="m4 4 16 16" hidden/>
-</svg>
-</button>
-</div>
+<div id="secret-fields"></div>
 <button id="submit" class="submit" type="submit">Save</button>
 </form>
 </section></main><script>{CLIENT_SCRIPT}</script></body>
@@ -1020,8 +1126,12 @@ def request_remaining_seconds(request: dict[str, Any]) -> int:
 def browser_metadata(request: dict[str, Any]) -> dict[str, Any]:
     """Return only what the entry page needs. Never the destination or command."""
     verifies = request.get("validator") != "opaque"
+    fields = request.get("fields")
+    if not isinstance(fields, list) or not fields:
+        fields = [{"name": "secret", "label": str(request.get("label") or "Secret")}]
     return {
         "label": request.get("label"),
+        "fields": fields,
         "status": "pending",
         "mode": request.get("mode", "secret"),
         "expires_at": request.get("expires_at"),
@@ -1176,11 +1286,24 @@ class SecretDropHandler(BaseHTTPRequestHandler):
         raw_body = self.rfile.read(content_length)
         try:
             payload = json.loads(raw_body.decode("utf-8"))
-            if not isinstance(payload, dict) or set(payload) != {"secret"} or not isinstance(payload["secret"], str):
+            if not isinstance(payload, dict):
                 raise ValueError
-            submitted_value = payload["secret"]
+            if set(payload) == {"secret"} and isinstance(payload["secret"], str):
+                submitted_value: str | dict[str, str] = payload["secret"]
+            elif (
+                set(payload) == {"secrets"}
+                and isinstance(payload["secrets"], dict)
+                and payload["secrets"]
+                and all(
+                    isinstance(key, str) and isinstance(value, str)
+                    for key, value in payload["secrets"].items()
+                )
+            ):
+                submitted_value = payload["secrets"]
+            else:
+                raise ValueError
         except (UnicodeDecodeError, ValueError):
-            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Use the Secret Drop page to submit one value.", "title": "Not saved", "retry": False})
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Use the Secret Drop page to submit every required value.", "title": "Not saved", "retry": False})
             return
 
         request_id = capability_digest(capability)

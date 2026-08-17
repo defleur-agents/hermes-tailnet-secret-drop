@@ -2,7 +2,7 @@
 
 A private, one-time credential handoff for Hermes Agent.
 
-Secret Drop gives Hermes a temporary Tailnet-only page where you can enter an API key, token, password, credential, or private URL without pasting that value into chat. The page accepts one value and never provides a list, reveal, export, or retrieval screen.
+Secret Drop gives Hermes a temporary Tailnet-only page where you can enter an API key, token, password, credential pair, or private URL without pasting those values into chat. Each request exposes only the fixed labeled fields chosen by its server-side adapter and never provides a list, reveal, export, or retrieval screen.
 
 The link's capability lives only in the URL fragment, the service stores only its hash, submissions must come from the service's own origin, and an older link can never overwrite a credential a newer link was issued for.
 
@@ -49,7 +49,10 @@ A provider adapter is the safest form. It fixes the environment key, the label, 
 
 ```bash
 hermes-secret-drop create --adapter openrouter-hermes
+hermes-secret-drop create --adapter cloudflare-r2-hermes
 ```
+
+The Cloudflare R2 adapter renders separate **Access Key ID** and **Secret Access Key** fields, then assembles the required JSON on the server. The person entering the credential never has to hand-compose JSON.
 
 Generic requests still work exactly as before:
 
@@ -68,7 +71,7 @@ Validators:
 
 | Validator | Selected by | What it proves |
 | --- | --- | --- |
-| `opaque` | `--validator opaque` (default) | Syntax only: one non-empty, single-line, storable value. It does **not** contact any provider. |
+| `opaque` | `--validator opaque` (default) or `--adapter cloudflare-r2-hermes` | Syntax only: non-empty, single-line, storable values. The R2 adapter assembles its two fields into JSON server-side; it does **not** contact any provider. |
 | `google-calendar-ics` | `--validator google-calendar-ics` | The URL is a private Google Calendar ICS feed, checked with a bounded fetch. |
 | `openrouter-api-key` | `--adapter openrouter-hermes` | The key is accepted by OpenRouter, checked with a bounded, read-only `GET https://openrouter.ai/api/v1/key`. |
 
@@ -118,6 +121,12 @@ python3 scripts/uninstall.py
 ```
 
 Uninstall stops the service, removes its Tailnet listener, destroys active request metadata, and removes the local package and skill. It does **not** delete secrets already saved in the Hermes `.env`.
+
+## What changed in 1.3.0
+
+- Provider adapters can render multiple fixed, labeled password fields while preserving the same one-time capability and write-only storage contract.
+- The Cloudflare R2 adapter accepts Access Key ID and Secret Access Key separately and assembles `CLOUDFLARE_R2_CREDENTIAL` JSON server-side.
+- Single-value generic and OpenRouter requests remain compatible, including the legacy single-value submission shape.
 
 ## What changed in 1.2.0
 
